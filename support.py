@@ -42,10 +42,11 @@ def process_support_description(message, bot):
 
 def show_faq(message, bot):
     faq_items = db.get_all_faq_items()
+    markup = types.InlineKeyboardMarkup()
+    btn_back = types.InlineKeyboardButton("⬅️ Назад в меню поддержки", callback_data="back_to_support_menu")
+    markup.add(btn_back)
+    
     if not faq_items:
-        markup = types.InlineKeyboardMarkup()
-        btn_back = types.InlineKeyboardButton("⬅️ Назад в меню поддержки", callback_data="back_to_support_menu")
-        markup.add(btn_back)
         bot.send_message(message.chat.id, "Пока нет часто задаваемых вопросов.", reply_markup=markup)
         return
 
@@ -53,22 +54,19 @@ def show_faq(message, bot):
     for i, (question, answer) in enumerate(faq_items):
         faq_text += f"**{i+1}. {question}**\n"
         faq_text += f"{answer}\n\n"
-    
-    markup = types.InlineKeyboardMarkup()
-    btn_back = types.InlineKeyboardButton("⬅️ Назад в меню поддержки", callback_data="back_to_support_menu")
-    markup.add(btn_back)
 
     bot.send_message(message.chat.id, faq_text, parse_mode="Markdown", reply_markup=markup)
 
 def show_user_requests(message, bot):
     user_id = message.chat.id
     requests = db.get_user_support_requests(user_id)
-
+    
+    markup = types.InlineKeyboardMarkup()
+    
     if not requests:
-        markup = types.InlineKeyboardMarkup()
         btn_back = types.InlineKeyboardButton("⬅️ Назад в меню поддержки", callback_data="back_to_support_menu")
         markup.add(btn_back)
-        bot.send_message(user_id, "У вас пока нет активных или завершенных запросов в техподдержку.", reply_markup=markup)
+        bot.send_message(user_id, "У вас пока нет активных или завершенных запросов.", reply_markup=markup)
         return
 
     requests_text = "Ваши запросы в техподдержку:\n\n"
@@ -79,9 +77,10 @@ def show_user_requests(message, bot):
             f"Статус: `{status}`\n\n"
         )
     
-    markup = types.InlineKeyboardMarkup()
+    btn_clear = types.InlineKeyboardButton("🗑️ Очистить мою историю запросов", callback_data="user_confirm_delete_my_requests")
     btn_back = types.InlineKeyboardButton("⬅️ Назад в меню поддержки", callback_data="back_to_support_menu")
-    markup.add(btn_back)
+    markup.add(btn_clear, btn_back)
+    
     bot.send_message(user_id, requests_text, parse_mode="Markdown", reply_markup=markup)
 
 def notify_admins_new_request(bot, request_id, user_id, user_full_name, description):
