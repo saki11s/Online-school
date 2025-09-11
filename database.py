@@ -72,7 +72,7 @@ def init_db():
                     request_id INTEGER NOT NULL REFERENCES support_requests(id) ON DELETE CASCADE,
                     sender_id BIGINT NOT NULL,
                     sender_name VARCHAR(255),
-                    sender_type VARCHAR(10) NOT NULL, -- 'user' or 'admin'
+                    sender_type VARCHAR(10) NOT NULL,
                     message_text TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -110,7 +110,6 @@ def add_support_request(user_id, username, full_name, description):
             conn.close()
             
 def add_support_message(request_id, sender_id, sender_name, sender_type, message_text):
-    """Добавляет сообщение в историю переписки по запросу."""
     conn = get_db_connection()
     if conn:
         try:
@@ -131,7 +130,6 @@ def add_support_message(request_id, sender_id, sender_name, sender_type, message
             conn.close()
 
 def get_messages_for_request(request_id):
-    """Возвращает все сообщения для конкретного запроса."""
     conn = get_db_connection()
     if conn:
         try:
@@ -346,6 +344,57 @@ def get_schedule():
         except psycopg2.Error as e:
             print(f"Ошибка при получении расписания: {e}")
             return None
+        finally:
+            cur.close()
+            conn.close()
+
+def delete_all_support_requests():
+    """Удаляет ВСЕ запросы и сообщения техподдержки."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("TRUNCATE TABLE support_messages, support_requests RESTART IDENTITY;")
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"Ошибка при удалении всех запросов: {e}")
+            conn.rollback()
+            return False
+        finally:
+            cur.close()
+            conn.close()
+
+def delete_support_request_by_id(request_id):
+    """Удаляет один запрос по ID."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM support_requests WHERE id = %s;", (request_id,))
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"Ошибка при удалении запроса по ID: {e}")
+            conn.rollback()
+            return False
+        finally:
+            cur.close()
+            conn.close()
+
+def delete_user_support_requests(user_id):
+    """Удаляет все запросы конкретного пользователя."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM support_requests WHERE user_id = %s;", (user_id,))
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"Ошибка при удалении запросов пользователя: {e}")
+            conn.rollback()
+            return False
         finally:
             cur.close()
             conn.close()
