@@ -45,12 +45,15 @@ def show_admin_panel(bot, chat_id, message_id, user_id):
 
     admin_states[chat_id] = ADMIN_STATE_NONE
 
+# ИЗМЕНЕНО: Добавлены кнопки удаления
 def get_manage_requests_menu():
     markup = types.InlineKeyboardMarkup(row_width=1)
     btn_view_new = types.InlineKeyboardButton("Показать новые запросы", callback_data="admin_view_new_requests")
     btn_view_all = types.InlineKeyboardButton("Показать все запросы", callback_data="admin_view_all_requests")
+    btn_delete_one = types.InlineKeyboardButton("🗑️ Удалить запрос по ID", callback_data="admin_delete_request_menu")
+    btn_delete_all = types.InlineKeyboardButton("⚠️ Очистить ВСЕ запросы", callback_data="admin_confirm_delete_all")
     btn_back = types.InlineKeyboardButton("⬅️ Назад в Админ-панель", callback_data="admin_back_to_main")
-    markup.add(btn_view_new, btn_view_all, btn_back)
+    markup.add(btn_view_new, btn_view_all, btn_delete_one, btn_delete_all, btn_back)
     return markup
 
 def show_requests_list(message, bot, is_new_requests=False):
@@ -267,3 +270,24 @@ def process_faq_answer(message, bot):
     if chat_id in admin_current_faq_question: del admin_current_faq_question[chat_id]
     
     bot.send_message(chat_id, "Выберите действие:", reply_markup=get_manage_faq_menu())
+
+def show_deletable_requests_list(bot, chat_id, message_id):
+    """Показывает админу список запросов для поштучного удаления."""
+    requests = db.get_all_support_requests()
+    
+    if not requests:
+        markup = types.InlineKeyboardMarkup()
+        btn_back = types.InlineKeyboardButton("⬅️ Назад к управлению запросами", callback_data="admin_manage_requests")
+        markup.add(btn_back)
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Нет запросов для удаления.", reply_markup=markup)
+        return
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for req_id, user_id, username, full_name, description, status, created_at in requests:
+        short_desc = description[:50] + "..." if len(description) > 50 else description
+        button_text = f"❌ #{req_id} | {full_name} ({status}): {short_desc}"
+        markup.add(types.InlineKeyboardButton(button_text, callback_data=f"admin_confirm_delete_one_{req_id}"))
+    
+    markup.add(types.InlineKeyboardButton("⬅️ Назад к управлению запросами", callback_data="admin_manage_requests"))
+    
+    bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Выберите запрос для удаления:", reply_markup=markup, parse_mode="Markdown")
