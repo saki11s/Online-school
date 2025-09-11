@@ -3,12 +3,15 @@ from telebot.apihelper import ApiTelegramException
 import config
 import modules.database as db
 import modules.support as support_module
+import re
 
 ADMIN_STATE_NONE = 0
 ADMIN_STATE_MANAGE_REQUESTS = 1
 ADMIN_STATE_AWAITING_ANSWER_TEXT = 2
 ADMIN_STATE_AWAITING_FAQ_QUESTION = 3
 ADMIN_STATE_AWAITING_FAQ_ANSWER = 4
+ADMIN_STATE_AWAITING_BULK_FAQ_TEXT = 6
+
 
 admin_states = {}
 admin_current_request_id = {}
@@ -40,12 +43,11 @@ def show_admin_panel(bot, chat_id, message_id, user_id):
             reply_markup=get_admin_main_menu(),
             parse_mode="Markdown"
         )
-    except:
+    except Exception:
         bot.send_message(chat_id, "⚙️ **Админ-панель**\nВыберите действие:", reply_markup=get_admin_main_menu(), parse_mode="Markdown")
 
     admin_states[chat_id] = ADMIN_STATE_NONE
 
-# ИЗМЕНЕНО: Добавлены кнопки удаления
 def get_manage_requests_menu():
     markup = types.InlineKeyboardMarkup(row_width=1)
     btn_view_new = types.InlineKeyboardButton("Показать новые запросы", callback_data="admin_view_new_requests")
@@ -225,10 +227,12 @@ def change_request_status(bot, call_id, chat_id, message_id_to_edit, request_id,
 
 def get_manage_faq_menu():
     markup = types.InlineKeyboardMarkup(row_width=1)
-    btn_add_faq = types.InlineKeyboardButton("Добавить FAQ", callback_data="admin_add_faq")
+    btn_add_faq = types.InlineKeyboardButton("➕ Добавить FAQ (по одному)", callback_data="admin_add_faq")
+    btn_bulk_update_faq = types.InlineKeyboardButton("🔄 Обновить/Задать FAQ списком", callback_data="admin_bulk_update_faq")
     btn_view_faq = types.InlineKeyboardButton("Показать FAQ", callback_data="support_faq_from_admin")
+    btn_delete_all_faq = types.InlineKeyboardButton("⚠️ Очистить ВСЕ FAQ", callback_data="admin_confirm_delete_all_faq")
     btn_back = types.InlineKeyboardButton("⬅️ Назад в Админ-панель", callback_data="admin_back_to_main")
-    markup.add(btn_add_faq, btn_view_faq, btn_back)
+    markup.add(btn_add_faq, btn_bulk_update_faq, btn_view_faq, btn_delete_all_faq, btn_back)
     return markup
 
 def start_add_faq_flow(message, bot):
@@ -291,3 +295,62 @@ def show_deletable_requests_list(bot, chat_id, message_id):
     markup.add(types.InlineKeyboardButton("⬅️ Назад к управлению запросами", callback_data="admin_manage_requests"))
     
     bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Выберите запрос для удаления:", reply_markup=markup, parse_mode="Markdown")
+
+def start_bulk_faq_update_flow(bot, chat_id):
+    """Начинает процесс массового обновления FAQ."""
+    template = (
+        "Пожалуйста, отправьте список вопросов и ответов для FAQ одним сообщением.\n"
+        "**Все существующие FAQ будут удалены и заменены на новые.**\n\n"
+        "**Используйте строгий шаблон:**\n"
+        "```\n"
+        "Вопрос: Ваш первый вопрос?\n"
+        "Ответ: Ваш первый ответ.\n\n"
+        "Вопрос: Ваш второй вопрос?\n"
+        "Ответ: Ваш второй ответ.\n"
+        "```\n\n"
+        "**Правила:**\n"
+        "1. Каждый вопрос начинается с 'Вопрос:'.\n"
+        "2. Каждый ответ начинается с 'Ответ:'.\n"
+        "3. Между парами 'Вопрос/Ответ' должна быть пустая строка (два переноса строки).\n"
+        "4. Убедитесь, что все вопросы заканчиваются вопросительным знаком '?'."
+    )
+    bot.send_message(chat_id, template, parse_mode="Markdown")
+    admin_states[chat_id] = ADMIN_STATE_AWAITING_BULK_FAQ_TEXT
+
+def process_bulk_faq_text(message, bot, admin_states):
+    """Обрабатывает и сохраняет список FAQ из текста админа."""
+    chat_id = message.chat.id
+    faq_text = message.text
+    
+    faq_items = []
+    matches = re.findall(r"Вопрос:\s*(.*?)\s*Ответ:\s*(.*?)(?=\n\nВопрос:|\Z)", faq_text, re.DOTALL | re.IGNORECASE)
+
+    if not matches:
+        bot.send_message(chat_id, "❌ Не удалось распознать вопросы и ответы из текста. Проверьте формат.")
+        admin_states[chat_id] = ADMIN_STATE_NONE
+        bot.send_message(chat_id, "Что еще хотите сделать в админ-панели?", reply_markup=get_admin_main_menu())
+        return
+
+    for question, answer in matches:
+        question = question.strip()
+        answer = answer.strip()
+        if question and answer:
+            faq_items.append((question, answer))
+    
+    if not faq_items:
+        bot.send_message(chat_id, "❌ Не удалось извлечь корректные пары Вопрос/Ответ из текста. Проверьте формат.")
+    elif db.bulk_update_faq(faq_items):
+        bot.send_message(chat_id, f"✅ FAQ успешно обновлен! Добавлено {len(faq_items)} записей.")
+    else:
+        bot.send_message(chat_id, "❌ Произошла ошибка при массовом обновлении FAQ.")
+    
+    admin_states[chat_id] = ADMIN_STATE_NONE
+    bot.send_message(chat_id, "Что еще хотите сделать в админ-панели?", reply_markup=get_admin_main_menu())
+
+def confirm_delete_all_faq(bot, chat_id, message_id):
+    """Запрашивает подтверждение для удаления всех FAQ."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn_yes = types.InlineKeyboardButton("ДА, УДАЛИТЬ ВСЕ", callback_data="admin_do_delete_all_faq")
+    btn_no = types.InlineKeyboardButton("Отмена", callback_data="admin_manage_faq")
+    markup.add(btn_yes, btn_no)
+    bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ **ВНИМАНИЕ!**\nВы уверены, что хотите удалить **ВСЕ** вопросы и ответы из FAQ? Это действие необратимо.", reply_markup=markup, parse_mode="Markdown")

@@ -1,6 +1,7 @@
 from telebot import types
 import modules.database as db
 import config
+import modules.faq_matcher as faq_matcher
 
 SUPPORT_STATE_NONE = 0
 SUPPORT_STATE_AWAITING_DESCRIPTION = 1
@@ -19,7 +20,7 @@ def get_support_menu():
     return markup
 
 def start_create_request_flow(message, bot):
-    bot.send_message(message.chat.id, "Опишите вашу проблему максимально подробно:")
+    bot.send_message(message.chat.id, "Опишите вашу проблему максимально подробно, и я постараюсь найти ответ в базе знаний. Если ответа не найдется, я создам запрос в техподдержку.")
     user_support_states[message.chat.id] = SUPPORT_STATE_AWAITING_DESCRIPTION
 
 def process_support_description(message, bot):
@@ -27,6 +28,23 @@ def process_support_description(message, bot):
     username = message.from_user.username
     full_name = f"{message.from_user.first_name} {message.from_user.last_name if message.from_user.last_name else ''}".strip()
     description = message.text
+
+    all_faq_items = db.get_all_faq_items()
+    
+    best_match = faq_matcher.find_best_faq_match(description, all_faq_items)
+    
+    if best_match:
+        faq_question, faq_answer = best_match
+        bot.send_message(
+            user_id,
+            f"💡 **Найден возможный ответ в нашем FAQ:**\n\n"
+            f"**Вопрос:** {faq_question}\n"
+            f"**Ответ:** {faq_answer}",
+            parse_mode="Markdown"
+        )
+        bot.send_message(user_id, "Надеюсь, это помогло! Если проблема не решена, вы можете создать запрос снова.", reply_markup=get_support_menu())
+        user_support_states[user_id] = SUPPORT_STATE_NONE
+        return
 
     request_id = db.add_support_request(user_id, username, full_name, description)
 
@@ -39,6 +57,7 @@ def process_support_description(message, bot):
 
     user_support_states[user_id] = SUPPORT_STATE_NONE
     bot.send_message(user_id, "Что еще могу сделать?", reply_markup=get_support_menu())
+
 
 def show_faq(message, bot):
     faq_items = db.get_all_faq_items()

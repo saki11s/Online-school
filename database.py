@@ -354,7 +354,8 @@ def delete_all_support_requests():
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("TRUNCATE TABLE support_messages, support_requests RESTART IDENTITY;")
+            cur.execute("TRUNCATE TABLE support_messages RESTART IDENTITY;")
+            cur.execute("TRUNCATE TABLE support_requests RESTART IDENTITY CASCADE;")
             conn.commit()
             return True
         except psycopg2.Error as e:
@@ -395,6 +396,58 @@ def delete_user_support_requests(user_id):
             print(f"Ошибка при удалении запросов пользователя: {e}")
             conn.rollback()
             return False
+        finally:
+            cur.close()
+            conn.close()
+
+def bulk_update_faq(faq_items):
+    """Массово обновляет FAQ: удаляет старые и вставляет новые."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("TRUNCATE TABLE faq RESTART IDENTITY;")
+            for question, answer in faq_items:
+                cur.execute("INSERT INTO faq (question, answer) VALUES (%s, %s);", (question, answer))
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"Ошибка при массовом обновлении FAQ: {e}")
+            conn.rollback()
+            return False
+        finally:
+            cur.close()
+            conn.close()
+
+def delete_all_faq_items():
+    """Удаляет все элементы FAQ."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("TRUNCATE TABLE faq RESTART IDENTITY;")
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"Ошибка при удалении всех FAQ: {e}")
+            conn.rollback()
+            return False
+        finally:
+            cur.close()
+            conn.close()
+
+def get_all_user_ids():
+    """Возвращает список всех уникальных user_id из таблицы users."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE is_admin = FALSE;")
+            user_ids = [row[0] for row in cur.fetchall()]
+            return user_ids
+        except psycopg2.Error as e:
+            print(f"Ошибка при получении всех user_id: {e}")
+            return []
         finally:
             cur.close()
             conn.close()

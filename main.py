@@ -14,6 +14,8 @@ if config.BOT_TOKEN is None:
 
 bot = telebot.TeleBot(config.BOT_TOKEN)
 
+ADMIN_DOC_PATH = "admin_documentation.pdf"
+
 def get_main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     btn_schedule = types.KeyboardButton("Расписание")
@@ -41,9 +43,20 @@ def send_welcome(message):
 
     welcome_text = (
         f"Привет, {user_name}! 👋\n"
-        "Я твой персоанльынй Бот для онлайн-школы.\nВыбери из меню интересующую тебя опцию."
+        f"Я бот для онлайн-школы."
     )
     bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_menu_with_admin_button(is_admin_user))
+
+    if is_admin_user:
+        if os.path.exists(ADMIN_DOC_PATH):
+            try:
+                with open(ADMIN_DOC_PATH, 'rb') as doc_file:
+                    bot.send_document(message.chat.id, doc_file, caption="✅ Ваша документация администратора:")
+            except Exception as e:
+                bot.send_message(message.chat.id, f"⚠️ Не удалось отправить документацию: {e}")
+        else:
+            bot.send_message(message.chat.id, f"⚠️ Файл документации '{ADMIN_DOC_PATH}' не найден.")
+
 
 def get_main_menu_with_admin_button(is_admin_user):
     markup = get_main_menu()
@@ -163,7 +176,7 @@ def callback_query(call):
     elif call.data == "user_do_delete_my_requests":
         if db.delete_user_support_requests(user_id):
             bot.answer_callback_query(call.id, "Ваша история запросов очищена.")
-            support_module.show_user_requests(call.message, bot) # Обновляем список (покажет, что он пуст)
+            support_module.show_user_requests(call.message, bot)
             try: bot.delete_message(chat_id=chat_id, message_id=message_id)
             except: pass
         else:
@@ -240,19 +253,32 @@ def callback_query(call):
             request_id = int(call.data.split('_')[-1])
             if db.delete_support_request_by_id(request_id):
                 bot.answer_callback_query(call.id, f"Запрос #{request_id} удален.")
-                admin_module.show_deletable_requests_list(bot, chat_id, message_id) # Обновляем список
+                admin_module.show_deletable_requests_list(bot, chat_id, message_id)
             else:
                 bot.answer_callback_query(call.id, "Ошибка при удалении.", show_alert=True)
-
 
         elif call.data == "admin_manage_faq":
             bot.answer_callback_query(call.id, "Управление FAQ...")
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Выберите действие:", reply_markup=admin_module.get_manage_faq_menu(), parse_mode="Markdown")
         elif call.data == "admin_add_faq":
-            bot.answer_callback_query(call.id, "Добавление FAQ...")
+            bot.answer_callback_query(call.id, "Добавление FAQ (по одному)...")
             admin_module.start_add_faq_flow(call.message, bot)
             try: bot.delete_message(chat_id=chat_id, message_id=message_id)
             except: pass
+        elif call.data == "admin_bulk_update_faq":
+            bot.answer_callback_query(call.id, "Массовое обновление FAQ...")
+            admin_module.start_bulk_faq_update_flow(bot, chat_id)
+            try: bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except: pass
+        elif call.data == "admin_confirm_delete_all_faq":
+            bot.answer_callback_query(call.id)
+            admin_module.confirm_delete_all_faq(bot, chat_id, message_id)
+        elif call.data == "admin_do_delete_all_faq":
+            if db.delete_all_faq_items():
+                bot.answer_callback_query(call.id, "Все FAQ удалены.", show_alert=True)
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Все FAQ были удалены.", reply_markup=admin_module.get_manage_faq_menu())
+            else:
+                bot.answer_callback_query(call.id, "Ошибка при удалении FAQ.", show_alert=True)
         elif call.data == "support_faq_from_admin":
             bot.answer_callback_query(call.id, "Показываю FAQ...")
             support_module.show_faq(call.message, bot)
@@ -287,6 +313,10 @@ def process_admin_faq_question_message(message):
 @bot.message_handler(func=lambda message: admin_module.is_admin(message.from_user.id) and admin_module.admin_states.get(message.chat.id) == admin_module.ADMIN_STATE_AWAITING_FAQ_ANSWER)
 def process_admin_faq_answer_message(message):
     admin_module.process_faq_answer(message, bot)
+
+@bot.message_handler(func=lambda message: admin_module.is_admin(message.from_user.id) and admin_module.admin_states.get(message.chat.id) == admin_module.ADMIN_STATE_AWAITING_BULK_FAQ_TEXT)
+def process_admin_bulk_faq_text_message(message):
+    admin_module.process_bulk_faq_text(message, bot, admin_module.admin_states)
 
 @bot.message_handler(func=lambda message: admin_module.is_admin(message.from_user.id) and admin_module.admin_states.get(message.chat.id) == schedule_module.ADMIN_STATE_AWAITING_SCHEDULE_TEXT)
 def process_admin_schedule_text_message(message):

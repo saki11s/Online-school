@@ -1,6 +1,7 @@
 from telebot import types
 import re
 import modules.database as db
+import config
 
 ADMIN_STATE_AWAITING_SCHEDULE_TEXT = 5
 
@@ -46,11 +47,11 @@ def process_schedule_update(message, bot, admin_states):
     schedule_text = message.text
     if db.update_schedule(schedule_text):
         bot.send_message(message.chat.id, "✅ Расписание успешно обновлено!")
+        notify_all_users_about_schedule_update(bot)
     else:
         bot.send_message(message.chat.id, "❌ Произошла ошибка при обновлении расписания.")
     
     admin_states[message.chat.id] = 0
-
 
 def parse_schedule_to_dict(full_text):
     """Разбирает полный текст расписания в словарь."""
@@ -91,3 +92,25 @@ def parse_schedule_for_day(full_text, day_name):
         return schedule_for_day
     else:
         return "На этот день занятий не найдено."
+
+def notify_all_users_about_schedule_update(bot):
+    """Отправляет всем НЕ-админам уведомление об обновлении расписания."""
+    all_user_ids = db.get_all_user_ids()
+    if not all_user_ids:
+        print("Нет пользователей для уведомления об обновлении расписания.")
+        return
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_view_schedule = types.InlineKeyboardButton("🗓️ Посмотреть расписание на неделю", callback_data="schedule_week")
+    markup.add(btn_view_schedule)
+
+    for user_id in all_user_ids:
+        try:
+            bot.send_message(
+                user_id,
+                "🔔 **Расписание обновлено!**\n\nНовое расписание уже доступно.",
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+        except Exception as e:
+            print(f"Не удалось отправить уведомление об обновлении расписания пользователю {user_id}: {e}")
