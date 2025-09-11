@@ -41,7 +41,7 @@ def send_welcome(message):
 
     welcome_text = (
         f"Привет, {user_name}! 👋\n"
-        "Я твой UniBot для онлайн-школы."
+        "Я твой персоанльынй Бот для онлайн-школы.\nВыбери из меню интересующую тебя опцию."
     )
     bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_menu_with_admin_button(is_admin_user))
 
@@ -153,6 +153,22 @@ def callback_query(call):
         bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
         support_module.start_reply_flow(call.message, bot, request_id)
 
+    elif call.data == "user_confirm_delete_my_requests":
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        btn_yes = types.InlineKeyboardButton("Да, удалить", callback_data="user_do_delete_my_requests")
+        btn_no = types.InlineKeyboardButton("Нет, отмена", callback_data="support_check_status")
+        markup.add(btn_yes, btn_no)
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Вы уверены, что хотите удалить все свои запросы? Это действие необратимо.", reply_markup=markup)
+
+    elif call.data == "user_do_delete_my_requests":
+        if db.delete_user_support_requests(user_id):
+            bot.answer_callback_query(call.id, "Ваша история запросов очищена.")
+            support_module.show_user_requests(call.message, bot) # Обновляем список (покажет, что он пуст)
+            try: bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except: pass
+        else:
+            bot.answer_callback_query(call.id, "Произошла ошибка при удалении.")
+
     elif admin_module.is_admin(user_id):
         if call.data == "admin_back_to_main":
             bot.answer_callback_query(call.id, "Назад в админ-панель...")
@@ -193,6 +209,41 @@ def callback_query(call):
             admin_module.show_requests_list(call.message, bot, is_new_requests=False)
             try: bot.delete_message(chat_id=chat_id, message_id=message_id)
             except: pass
+
+        elif call.data == "admin_confirm_delete_all":
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            btn_yes = types.InlineKeyboardButton("ДА, УДАЛИТЬ ВСЕ", callback_data="admin_do_delete_all")
+            btn_no = types.InlineKeyboardButton("Отмена", callback_data="admin_manage_requests")
+            markup.add(btn_yes, btn_no)
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ **ВНИМАНИЕ!**\nВы уверены, что хотите удалить **ВСЕ** запросы и историю переписки? Это действие необратимо.", reply_markup=markup, parse_mode="Markdown")
+
+        elif call.data == "admin_do_delete_all":
+            if db.delete_all_support_requests():
+                bot.answer_callback_query(call.id, "Все запросы были удалены.", show_alert=True)
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Все запросы в техподдержку были удалены.", reply_markup=admin_module.get_manage_requests_menu())
+            else:
+                bot.answer_callback_query(call.id, "Произошла ошибка при удалении.", show_alert=True)
+        
+        elif call.data == "admin_delete_request_menu":
+            bot.answer_callback_query(call.id)
+            admin_module.show_deletable_requests_list(bot, chat_id, message_id)
+            
+        elif call.data.startswith("admin_confirm_delete_one_"):
+            request_id = int(call.data.split('_')[-1])
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            btn_yes = types.InlineKeyboardButton("Да, удалить", callback_data=f"admin_do_delete_one_{request_id}")
+            btn_no = types.InlineKeyboardButton("Отмена", callback_data="admin_delete_request_menu")
+            markup.add(btn_yes, btn_no)
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"Вы уверены, что хотите удалить запрос #{request_id}?", reply_markup=markup)
+            
+        elif call.data.startswith("admin_do_delete_one_"):
+            request_id = int(call.data.split('_')[-1])
+            if db.delete_support_request_by_id(request_id):
+                bot.answer_callback_query(call.id, f"Запрос #{request_id} удален.")
+                admin_module.show_deletable_requests_list(bot, chat_id, message_id) # Обновляем список
+            else:
+                bot.answer_callback_query(call.id, "Ошибка при удалении.", show_alert=True)
+
 
         elif call.data == "admin_manage_faq":
             bot.answer_callback_query(call.id, "Управление FAQ...")
