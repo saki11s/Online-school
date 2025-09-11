@@ -7,7 +7,7 @@ print(f"Загрузка языковой модели '{MODEL_NAME}'...")
 model = SentenceTransformer(MODEL_NAME)
 print("Модель успешно загружена.")
 
-SIMILARITY_THRESHOLD = 0.75
+SIMILARITY_THRESHOLD = 0.60
 
 def find_best_faq_match(user_question, all_faq_items):
     """
