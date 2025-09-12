@@ -51,7 +51,7 @@ def send_welcome(message):
         if os.path.exists(ADMIN_DOC_PATH):
             try:
                 with open(ADMIN_DOC_PATH, 'rb') as doc_file:
-                    bot.send_document(message.chat.id, doc_file, caption="✅ Ваша документация администратора:")
+                    bot.send_document(message.chat.id, doc_file, caption="✅ Ваша документация администратора:", timeout=60)
             except Exception as e:
                 bot.send_message(message.chat.id, f"⚠️ Не удалось отправить документацию: {e}")
         else:
@@ -224,6 +224,15 @@ def callback_query(call):
             except: pass
 
         elif call.data == "admin_confirm_delete_all":
+            requests = db.get_all_support_requests()
+            if not requests:
+                bot.answer_callback_query(call.id)
+                markup = types.InlineKeyboardMarkup()
+                btn_back = types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_manage_requests")
+                markup.add(btn_back)
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="На данный момент нет запросов для удаления.", reply_markup=markup)
+                return
+
             markup = types.InlineKeyboardMarkup(row_width=2)
             btn_yes = types.InlineKeyboardButton("ДА, УДАЛИТЬ ВСЕ", callback_data="admin_do_delete_all")
             btn_no = types.InlineKeyboardButton("Отмена", callback_data="admin_manage_requests")
@@ -293,6 +302,29 @@ def callback_query(call):
             schedule_module.start_schedule_update_flow(bot, chat_id, admin_module.admin_states)
             try: bot.delete_message(chat_id=chat_id, message_id=message_id)
             except: pass
+            
+        elif call.data == "admin_schedule_delete_confirm":
+            bot.answer_callback_query(call.id)
+            schedule_text = db.get_schedule()
+            if not schedule_text:
+                markup = types.InlineKeyboardMarkup()
+                btn_back = types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_manage_schedule")
+                markup.add(btn_back)
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Расписание уже пусто.", reply_markup=markup)
+                return
+
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            btn_yes = types.InlineKeyboardButton("Да, очистить", callback_data="admin_schedule_do_delete")
+            btn_no = types.InlineKeyboardButton("Отмена", callback_data="admin_manage_schedule")
+            markup.add(btn_yes, btn_no)
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ Вы уверены, что хотите полностью очистить всё расписание?", reply_markup=markup)
+
+        elif call.data == "admin_schedule_do_delete":
+            if db.update_schedule(None):
+                bot.answer_callback_query(call.id, "Расписание успешно очищено.", show_alert=True)
+                schedule_module.show_manage_schedule_panel(bot, chat_id, message_id)
+            else:
+                bot.answer_callback_query(call.id, "Произошла ошибка при очистке расписания.", show_alert=True)
 
 @bot.message_handler(func=lambda message: support_module.user_support_states.get(message.chat.id) == support_module.SUPPORT_STATE_AWAITING_DESCRIPTION)
 def process_support_message(message):

@@ -442,7 +442,7 @@ def get_all_user_ids():
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("SELECT id FROM users WHERE is_admin = FALSE;")
+            cur.execute("SELECT id FROM users WHERE is_admin IS NOT TRUE;")
             user_ids = [row[0] for row in cur.fetchall()]
             return user_ids
         except psycopg2.Error as e:
@@ -451,3 +451,4 @@ def get_all_user_ids():
         finally:
             cur.close()
             conn.close()
+    return []
