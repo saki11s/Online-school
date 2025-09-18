@@ -11,6 +11,7 @@ ADMIN_STATE_AWAITING_ANSWER_TEXT = 2
 ADMIN_STATE_AWAITING_FAQ_QUESTION = 3
 ADMIN_STATE_AWAITING_FAQ_ANSWER = 4
 ADMIN_STATE_AWAITING_BULK_FAQ_TEXT = 6
+ADMIN_STATE_AWAITING_GROUP_NAME = 7
 
 
 admin_states = {}
@@ -26,8 +27,9 @@ def get_admin_main_menu():
     btn_manage_requests = types.InlineKeyboardButton("Управление запросами ТП", callback_data="admin_manage_requests")
     btn_manage_faq = types.InlineKeyboardButton("Управление FAQ", callback_data="admin_manage_faq")
     btn_manage_schedule = types.InlineKeyboardButton("Управление расписанием", callback_data="admin_manage_schedule")
+    btn_manage_classes = types.InlineKeyboardButton("Управление классами", callback_data="admin_manage_classes")
     btn_back_to_main = types.InlineKeyboardButton("⬅️ Главное меню (Пользователь)", callback_data="back_to_main")
-    markup.add(btn_manage_requests, btn_manage_faq, btn_manage_schedule, btn_back_to_main)
+    markup.add(btn_manage_requests, btn_manage_faq, btn_manage_schedule, btn_manage_classes, btn_back_to_main)
     return markup
 
 def show_admin_panel(bot, chat_id, message_id, user_id):
@@ -47,7 +49,7 @@ def show_admin_panel(bot, chat_id, message_id, user_id):
         bot.send_message(chat_id, "⚙️ **Админ-панель**\nВыберите действие:", reply_markup=get_admin_main_menu(), parse_mode="Markdown")
 
     admin_states[chat_id] = ADMIN_STATE_NONE
-
+    
 def get_manage_requests_menu():
     markup = types.InlineKeyboardMarkup(row_width=1)
     btn_view_new = types.InlineKeyboardButton("Показать новые запросы", callback_data="admin_view_new_requests")
@@ -276,7 +278,6 @@ def process_faq_answer(message, bot):
     bot.send_message(chat_id, "Выберите действие:", reply_markup=get_manage_faq_menu())
 
 def show_deletable_requests_list(bot, chat_id, message_id):
-    """Показывает админу список запросов для поштучного удаления."""
     requests = db.get_all_support_requests()
     
     if not requests:
@@ -297,7 +298,6 @@ def show_deletable_requests_list(bot, chat_id, message_id):
     bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Выберите запрос для удаления:", reply_markup=markup, parse_mode="Markdown")
 
 def start_bulk_faq_update_flow(bot, chat_id):
-    """Начинает процесс массового обновления FAQ."""
     template = (
         "Пожалуйста, отправьте список вопросов и ответов для FAQ одним сообщением.\n"
         "**Все существующие FAQ будут удалены и заменены на новые.**\n\n"
@@ -318,7 +318,6 @@ def start_bulk_faq_update_flow(bot, chat_id):
     admin_states[chat_id] = ADMIN_STATE_AWAITING_BULK_FAQ_TEXT
 
 def process_bulk_faq_text(message, bot, admin_states):
-    """Обрабатывает и сохраняет список FAQ из текста админа."""
     chat_id = message.chat.id
     faq_text = message.text
     
@@ -348,9 +347,95 @@ def process_bulk_faq_text(message, bot, admin_states):
     bot.send_message(chat_id, "Что еще хотите сделать в админ-панели?", reply_markup=get_admin_main_menu())
 
 def confirm_delete_all_faq(bot, chat_id, message_id):
-    """Запрашивает подтверждение для удаления всех FAQ."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_yes = types.InlineKeyboardButton("ДА, УДАЛИТЬ ВСЕ", callback_data="admin_do_delete_all_faq")
     btn_no = types.InlineKeyboardButton("Отмена", callback_data="admin_manage_faq")
     markup.add(btn_yes, btn_no)
     bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ **ВНИМАНИЕ!**\nВы уверены, что хотите удалить **ВСЕ** вопросы и ответы из FAQ? Это действие необратимо.", reply_markup=markup, parse_mode="Markdown")
+
+def get_manage_classes_menu():
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_add_group = types.InlineKeyboardButton("➕ Добавить группу", callback_data="admin_add_group")
+    btn_delete_group = types.InlineKeyboardButton("🗑️ Удалить группу", callback_data="admin_delete_group")
+    btn_back = types.InlineKeyboardButton("⬅️ Назад в Админ-панель", callback_data="admin_back_to_main")
+    markup.add(btn_add_group, btn_delete_group, btn_back)
+    return markup
+
+def show_manage_classes_panel(bot, chat_id, message_id):
+    groups = db.get_all_groups_with_classes()
+    text = "🏫 **Управление классами и группами**\n\n"
+    if groups:
+        text += "Текущий список групп:\n"
+        current_class = ""
+        for _, class_number, group_name in groups:
+            if str(class_number) != current_class:
+                current_class = str(class_number)
+                text += f"\n**{current_class} Класс:** "
+            text += f"`{group_name}` "
+    else:
+        text += "Пока не создано ни одной группы."
+    
+    bot.edit_message_text(
+        text=text, 
+        chat_id=chat_id, 
+        message_id=message_id, 
+        reply_markup=get_manage_classes_menu(), 
+        parse_mode="Markdown"
+    )
+
+def start_add_group_flow(bot, chat_id):
+    bot.send_message(chat_id, "Введите номер класса и букву группы в формате: `11А` или `9Б`")
+    admin_states[chat_id] = ADMIN_STATE_AWAITING_GROUP_NAME
+
+def process_add_group(message, bot):
+    chat_id = message.chat.id
+    text = message.text.strip()
+    
+    match = re.match(r'^(\d{1,2})([А-Яа-я])$', text)
+    if not match:
+        bot.send_message(chat_id, "Неверный формат. Пожалуйста, введите в формате `11А` (цифра и одна буква).")
+        return
+    
+    class_number = int(match.group(1))
+    group_name = match.group(2).upper()
+
+    if not (1 <= class_number <= 11):
+        bot.send_message(chat_id, "Номер класса должен быть от 1 до 11.")
+        return
+        
+    success, message_text = db.add_class_group(class_number, group_name)
+    bot.send_message(chat_id, message_text)
+
+    admin_states[chat_id] = ADMIN_STATE_NONE
+    bot.send_message(chat_id, "Возвращаю в админ-панель...", reply_markup=get_admin_main_menu())
+
+
+def show_deletable_groups_list(bot, chat_id, message_id):
+    groups = db.get_all_groups_with_classes()
+    if not groups:
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Нет групп для удаления.", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_manage_classes")))
+        return
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for group_id, class_number, group_name in groups:
+        markup.add(types.InlineKeyboardButton(f"❌ {class_number}{group_name}", callback_data=f"admin_confirm_delete_group_{group_id}"))
+    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_manage_classes"))
+    bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Выберите группу для удаления:", reply_markup=markup)
+
+def confirm_delete_group(bot, chat_id, message_id, group_id):
+    group_info = db.get_group_info(group_id)
+    if not group_info: return
+    
+    group_name = f"{group_info[2]}{group_info[1]}"
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn_yes = types.InlineKeyboardButton("Да, удалить", callback_data=f"admin_do_delete_group_{group_id}")
+    btn_no = types.InlineKeyboardButton("Отмена", callback_data="admin_delete_group")
+    markup.add(btn_yes, btn_no)
+    bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"Вы уверены, что хотите удалить группу `{group_name}`? Все связанные расписания будут удалены, а ученики отвязаны.", reply_markup=markup, parse_mode="Markdown")
+
+def do_delete_group(bot, call, group_id):
+    if db.delete_group_by_id(group_id):
+        bot.answer_callback_query(call.id, "Группа удалена.")
+        show_deletable_groups_list(bot, call.message.chat.id, call.message.message_id)
+    else:
+        bot.answer_callback_query(call.id, "Ошибка при удалении.", show_alert=True)

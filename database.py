@@ -48,19 +48,37 @@ def init_db():
             """)
 
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS classes (
+                    id SERIAL PRIMARY KEY,
+                    class_number INT UNIQUE NOT NULL
+                );
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS class_groups (
+                    id SERIAL PRIMARY KEY,
+                    class_id INT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+                    group_name VARCHAR(10) NOT NULL,
+                    UNIQUE(class_id, group_name)
+                );
+            """)
+
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id BIGINT PRIMARY KEY,
                     username VARCHAR(255),
                     first_name VARCHAR(255),
                     last_name VARCHAR(255),
                     is_admin BOOLEAN DEFAULT FALSE,
-                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    group_id INT REFERENCES class_groups(id) ON DELETE SET NULL
                 );
             """)
             
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS schedule (
-                    id INT PRIMARY KEY DEFAULT 1,
+                CREATE TABLE IF NOT EXISTS schedules (
+                    id SERIAL PRIMARY KEY,
+                    group_id INT UNIQUE NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
                     schedule_text TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -77,11 +95,14 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            
+            cur.execute("INSERT INTO classes (class_number) SELECT i FROM generate_series(1, 11) AS i ON CONFLICT (class_number) DO NOTHING;")
 
             conn.commit()
             print("База данных инициализирована успешно.")
         except psycopg2.Error as e:
             print(f"Ошибка при инициализации базы данных: {e}")
+            conn.rollback()
         finally:
             cur.close()
             conn.close()
@@ -281,6 +302,7 @@ def update_support_request_status(request_id, new_status, admin_id=None):
             cur.close()
             conn.close()
 
+
 def add_or_update_user(user_id, username, first_name, last_name, is_admin=False):
     conn = get_db_connection()
     if conn:
@@ -308,20 +330,20 @@ def add_or_update_user(user_id, username, first_name, last_name, is_admin=False)
             cur.close()
             conn.close()
 
-def update_schedule(schedule_text):
+def update_schedule(group_id, schedule_text):
     conn = get_db_connection()
     if conn:
         try:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO schedule (id, schedule_text, updated_at)
-                VALUES (1, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (id) DO UPDATE SET
+                INSERT INTO schedules (group_id, schedule_text, updated_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (group_id) DO UPDATE SET
                     schedule_text = EXCLUDED.schedule_text,
                     updated_at = EXCLUDED.updated_at;
                 """,
-                (schedule_text,)
+                (group_id, schedule_text)
             )
             conn.commit()
             return True
@@ -333,12 +355,12 @@ def update_schedule(schedule_text):
             cur.close()
             conn.close()
 
-def get_schedule():
+def get_schedule_for_group(group_id):
     conn = get_db_connection()
     if conn:
         try:
             cur = conn.cursor()
-            cur.execute("SELECT schedule_text FROM schedule WHERE id = 1;")
+            cur.execute("SELECT schedule_text FROM schedules WHERE group_id = %s;", (group_id,))
             result = cur.fetchone()
             return result[0] if result else None
         except psycopg2.Error as e:
@@ -447,6 +469,145 @@ def get_all_user_ids():
             return user_ids
         except psycopg2.Error as e:
             print(f"Ошибка при получении всех user_id: {e}")
+            return []
+        finally:
+            cur.close()
+            conn.close()
+    return []
+
+
+def get_user_group(user_id):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT group_id FROM users WHERE id = %s;", (user_id,))
+            result = cur.fetchone()
+            return result[0] if result else None
+        finally:
+            cur.close()
+            conn.close()
+
+def set_user_group(user_id, group_id):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET group_id = %s WHERE id = %s;", (group_id, user_id))
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"Ошибка при установке группы для пользователя: {e}")
+            conn.rollback()
+            return False
+        finally:
+            cur.close()
+            conn.close()
+
+def get_all_classes():
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id, class_number FROM classes ORDER BY class_number;")
+            return cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+
+def get_groups_for_class(class_id):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id, group_name FROM class_groups WHERE class_id = %s ORDER BY group_name;", (class_id,))
+            return cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+
+def get_group_info(group_id):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT g.id, g.group_name, c.class_number
+                FROM class_groups g
+                JOIN classes c ON g.class_id = c.id
+                WHERE g.id = %s;
+            """, (group_id,))
+            return cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+def add_class_group(class_number, group_name):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM classes WHERE class_number = %s;", (class_number,))
+            class_id_row = cur.fetchone()
+            if not class_id_row: return False, "Класс не найден"
+
+            class_id = class_id_row[0]
+            cur.execute("INSERT INTO class_groups (class_id, group_name) VALUES (%s, %s);", (class_id, group_name.upper()))
+            conn.commit()
+            return True, "Группа успешно добавлена"
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return False, "Такая группа уже существует в этом классе."
+        except psycopg2.Error as e:
+            conn.rollback()
+            return False, str(e)
+        finally:
+            cur.close()
+            conn.close()
+
+def get_all_groups_with_classes():
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT g.id, c.class_number, g.group_name
+                FROM class_groups g
+                JOIN classes c ON g.class_id = c.id
+                ORDER BY c.class_number, g.group_name;
+            """)
+            return cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+
+def delete_group_by_id(group_id):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM class_groups WHERE id = %s;", (group_id,))
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"Ошибка при удалении группы: {e}")
+            conn.rollback()
+            return False
+        finally:
+            cur.close()
+            conn.close()
+            
+def get_user_ids_for_group(group_id):
+    """Возвращает список user_id для конкретной группы."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE group_id = %s AND is_admin IS NOT TRUE;", (group_id,))
+            user_ids = [row[0] for row in cur.fetchall()]
+            return user_ids
+        except psycopg2.Error as e:
+            print(f"Ошибка при получении user_id для группы: {e}")
             return []
         finally:
             cur.close()

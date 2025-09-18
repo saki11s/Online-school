@@ -6,6 +6,7 @@ import modules.faq_matcher as faq_matcher
 SUPPORT_STATE_NONE = 0
 SUPPORT_STATE_AWAITING_DESCRIPTION = 1
 SUPPORT_STATE_AWAITING_REPLY = 2
+SUPPORT_STATE_AWAITING_FAQ_CONFIRM = 3
 
 user_support_states = {}
 user_replying_to_request_id = {}
@@ -21,7 +22,7 @@ def get_support_menu():
 
 def start_create_request_flow(message, bot):
     bot.send_message(message.chat.id, "Опишите вашу проблему максимально подробно, и я постараюсь найти ответ в базе знаний. Если ответа не найдется, я создам запрос в техподдержку.")
-    user_support_states[message.chat.id] = SUPPORT_STATE_AWAITING_DESCRIPTION
+    user_support_states[message.chat.id] = {'state': SUPPORT_STATE_AWAITING_DESCRIPTION}
 
 def process_support_description(message, bot):
     user_id = message.chat.id
@@ -42,12 +43,23 @@ def process_support_description(message, bot):
             f"**Ответ:** {faq_answer}",
             parse_mode="Markdown"
         )
-        bot.send_message(user_id, "Надеюсь, это помогло! Если проблема не решена, вы можете создать запрос снова.", reply_markup=get_support_menu())
-        user_support_states[user_id] = SUPPORT_STATE_NONE
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        btn_yes = types.InlineKeyboardButton("Да", callback_data="faq_solved")
+        btn_no = types.InlineKeyboardButton("Нет", callback_data="faq_not_solved")
+        markup.add(btn_yes, btn_no)
+        bot.send_message(user_id, "Это решило вашу проблему?", reply_markup=markup)
+
+        user_support_states[user_id] = {
+            'state': SUPPORT_STATE_AWAITING_FAQ_CONFIRM,
+            'description': description
+        }
         return
 
-    request_id = db.add_support_request(user_id, username, full_name, description)
+    create_ticket(user_id, username, full_name, description, bot)
 
+def create_ticket(user_id, username, full_name, description, bot):
+    request_id = db.add_support_request(user_id, username, full_name, description)
     if request_id:
         db.add_support_message(request_id, user_id, full_name, 'user', description)
         bot.send_message(user_id, f"Спасибо, ваш запрос #{request_id} принят и будет рассмотрен. Мы свяжемся с вами в ближайшее время.")
@@ -55,8 +67,26 @@ def process_support_description(message, bot):
     else:
         bot.send_message(user_id, "Извините, не удалось создать запрос. Пожалуйста, попробуйте позже.")
 
-    user_support_states[user_id] = SUPPORT_STATE_NONE
+    user_support_states[user_id] = {'state': SUPPORT_STATE_NONE}
     bot.send_message(user_id, "Что еще могу сделать?", reply_markup=get_support_menu())
+
+def create_ticket_after_faq(call, bot):
+    user_id = call.message.chat.id
+    state_data = user_support_states.get(user_id)
+
+    if not state_data or 'description' not in state_data:
+        bot.send_message(user_id, "Произошла ошибка, не удалось найти исходный текст вашего вопроса. Пожалуйста, создайте запрос заново.")
+        user_support_states[user_id] = {'state': SUPPORT_STATE_NONE}
+        bot.send_message(user_id, "Что еще могу сделать?", reply_markup=get_support_menu())
+        return
+
+    description = state_data['description']
+    user_info = call.from_user
+    username = user_info.username
+    full_name = f"{user_info.first_name} {user_info.last_name if user_info.last_name else ''}".strip()
+    
+    bot.send_message(user_id, f"Понял. Создаю запрос с вашим вопросом:\n_«{description}»_", parse_mode="Markdown")
+    create_ticket(user_id, username, full_name, description, bot)
 
 
 def show_faq(message, bot):
@@ -123,7 +153,7 @@ def notify_admins_new_request(bot, request_id, user_id, user_full_name, descript
 
 def start_reply_flow(message, bot, request_id):
     chat_id = message.chat.id
-    user_support_states[chat_id] = SUPPORT_STATE_AWAITING_REPLY
+    user_support_states[chat_id] = {'state': SUPPORT_STATE_AWAITING_REPLY}
     user_replying_to_request_id[chat_id] = request_id
     bot.send_message(chat_id, "Введите ваш ответ для техподдержки:")
 
@@ -156,7 +186,7 @@ def process_user_reply(message, bot):
 
     bot.send_message(user_id, "Ваше сообщение отправлено в техподдержку.")
     
-    user_support_states[user_id] = SUPPORT_STATE_NONE
+    user_support_states[user_id] = {'state': SUPPORT_STATE_NONE}
     if user_id in user_replying_to_request_id:
         del user_replying_to_request_id[user_id]
 

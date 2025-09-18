@@ -16,6 +16,8 @@ bot = telebot.TeleBot(config.BOT_TOKEN)
 
 ADMIN_DOC_PATH = "admin_documentation.pdf"
 
+user_class_selection_state = {}
+
 def get_main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     btn_schedule = types.KeyboardButton("Расписание")
@@ -24,22 +26,31 @@ def get_main_menu():
     return markup
 
 def get_schedule_menu():
-    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]
+    buttons = [types.InlineKeyboardButton(day, callback_data=f"schedule_day_{i}") for i, day in enumerate(days)]
+    markup.add(*buttons)
+    
     btn_today = types.InlineKeyboardButton("На сегодня", callback_data="schedule_today")
-    btn_week = types.InlineKeyboardButton("На неделю", callback_data="schedule_week")
+    btn_all_week = types.InlineKeyboardButton("На всю неделю", callback_data="schedule_week")
+    markup.add(btn_today, btn_all_week)
+    
     btn_back = types.InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main_from_schedule")
-    markup.add(btn_today, btn_week, btn_back)
+    markup.add(btn_back)
     return markup
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name if message.from_user.first_name else "Пользователь"
-    full_name = f"{message.from_user.first_name} {message.from_user.last_name if message.from_user.last_name else ''}".strip()
-    username = message.from_user.username
     
     is_admin_user = (user_id in config.ADMIN_IDS)
-    db.add_or_update_user(user_id, username, message.from_user.first_name, message.from_user.last_name, is_admin_user)
+    db.add_or_update_user(user_id, message.from_user.username, message.from_user.first_name, message.from_user.last_name, is_admin_user)
+
+    user_group_id = db.get_user_group(user_id)
+    if not user_group_id and not is_admin_user:
+        bot.send_message(message.chat.id, f"Привет, {user_name}! 👋\nПрежде чем мы начнем, пожалуйста, выбери свой класс.", reply_markup=get_class_selection_menu())
+        return
 
     welcome_text = (
         f"Привет, {user_name}! 👋\n"
@@ -67,51 +78,140 @@ def get_main_menu_with_admin_button(is_admin_user):
 
 @bot.message_handler(func=lambda message: message.text == "Расписание")
 def show_schedule_options(message):
+    user_id = message.from_user.id
+    is_admin_user = (user_id in config.ADMIN_IDS)
+    db.add_or_update_user(user_id, message.from_user.username, message.from_user.first_name, message.from_user.last_name, is_admin_user)
+    
+    user_group_id = db.get_user_group(user_id)
+    if not user_group_id and not is_admin_user:
+        bot.send_message(message.chat.id, "Сначала нужно выбрать свой класс.", reply_markup=get_class_selection_menu())
+        return
+
     bot.send_message(message.chat.id, "Что интересует по расписанию?", reply_markup=get_schedule_menu())
 
 @bot.message_handler(func=lambda message: message.text == "Техподдержка")
 def show_support_options(message):
+    user_id = message.from_user.id
+    is_admin_user = (user_id in config.ADMIN_IDS)
+    db.add_or_update_user(user_id, message.from_user.username, message.from_user.first_name, message.from_user.last_name, is_admin_user)
     bot.send_message(message.chat.id, "Выбери опцию техподдержки:", reply_markup=support_module.get_support_menu())
 
 @bot.message_handler(func=lambda message: message.text == "⚙️ Админ-панель" and admin_module.is_admin(message.from_user.id))
 def show_admin_panel_entry(message):
     admin_module.show_admin_panel(bot, message.chat.id, message.message_id, message.from_user.id)
 
+def get_class_selection_menu():
+    classes = db.get_all_classes()
+    markup = types.InlineKeyboardMarkup(row_width=4)
+    if classes:
+        buttons = [types.InlineKeyboardButton(str(c[1]), callback_data=f"select_class_{c[0]}") for c in classes]
+        markup.add(*buttons)
+    else:
+        markup.add(types.InlineKeyboardButton("Нет доступных классов", callback_data="no_action"))
+    return markup
+
+def get_group_selection_menu(class_id):
+    groups = db.get_groups_for_class(class_id)
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    if groups:
+        buttons = [types.InlineKeyboardButton(g[1], callback_data=f"select_group_{g[0]}") for g in groups]
+        markup.add(*buttons)
+    btn_back = types.InlineKeyboardButton("⬅️ Назад к выбору класса", callback_data="back_to_class_select")
+    markup.add(btn_back)
+    return markup
+
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     chat_id = call.message.chat.id
     user_id = call.from_user.id
-    message_id = call.message.message_id 
+    message_id = call.message.message_id
 
-    if call.data == "schedule_today":
+    if call.data.startswith("select_class_"):
+        class_id = int(call.data.split('_')[-1])
+        bot.edit_message_text("Теперь выбери свою букву/группу:", chat_id, message_id, reply_markup=get_group_selection_menu(class_id))
+    
+    elif call.data == "back_to_class_select":
+        bot.edit_message_text("Пожалуйста, выбери свой класс:", chat_id, message_id, reply_markup=get_class_selection_menu())
+
+    elif call.data.startswith("select_group_"):
+        group_id = int(call.data.split('_')[-1])
+        db.set_user_group(user_id, group_id)
+        group_info = db.get_group_info(group_id)
+        class_name = group_info[2] if group_info else ""
+        group_name = group_info[1] if group_info else ""
+
+        bot.edit_message_text(
+            chat_id=chat_id, 
+            message_id=message_id, 
+            text=f"Отлично! Я запомнил, что ты из {class_name}{group_name} класса.",
+            reply_markup=None
+        )
+        bot.send_message(chat_id, "Теперь ты можешь посмотреть расписание или обратиться в техподдержку.", reply_markup=get_main_menu_with_admin_button(admin_module.is_admin(user_id)))
+
+    ### НОВЫЙ БЛОК: Логика для кнопки "На сегодня" ###
+    elif call.data == "schedule_today":
         bot.answer_callback_query(call.id, "Загружаю расписание...")
-        full_schedule = db.get_schedule()
-        if not full_schedule:
-            bot.send_message(chat_id, "Расписание еще не заполнено.")
+        user_group_id = db.get_user_group(user_id)
+        if not user_group_id:
+            bot.send_message(chat_id, "Пожалуйста, сначала выбери свой класс.")
             return
 
-        days_of_week = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-        day_index = datetime.datetime.now().weekday()
-        current_day_name = days_of_week[day_index]
-        today_schedule = schedule_module.parse_schedule_for_day(full_schedule, current_day_name)
+        full_schedule = db.get_schedule_for_group(user_group_id)
+        if not full_schedule:
+            bot.send_message(chat_id, "Расписание для твоего класса еще не заполнено.")
+            return
+
+        days_of_week_full = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        day_index = datetime.datetime.now().weekday() # 0 = Пн, 6 = Вс
+        current_day_name = days_of_week_full[day_index]
+        day_schedule = schedule_module.parse_schedule_for_day(full_schedule, current_day_name)
         
         markup = types.InlineKeyboardMarkup()
-        btn_back = types.InlineKeyboardButton("⬅️ Назад к выбору расписания", callback_data="back_to_schedule_menu")
+        btn_back = types.InlineKeyboardButton("⬅️ Назад к выбору дня", callback_data="back_to_schedule_menu")
         markup.add(btn_back)
-        bot.send_message(chat_id, f"**Расписание на сегодня ({current_day_name}):**\n\n{today_schedule}", parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(chat_id, f"**Расписание на сегодня ({current_day_name}):**\n\n{day_schedule}", parse_mode="Markdown", reply_markup=markup)
+        try: bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except: pass
+
+    elif call.data.startswith("schedule_day_"):
+        bot.answer_callback_query(call.id, "Загружаю расписание...")
+        user_group_id = db.get_user_group(user_id)
+        if not user_group_id:
+            bot.send_message(chat_id, "Пожалуйста, сначала выбери свой класс.")
+            return
+
+        full_schedule = db.get_schedule_for_group(user_group_id)
+        if not full_schedule:
+            bot.send_message(chat_id, "Расписание для твоего класса еще не заполнено.")
+            return
+
+        days_of_week_full = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        day_index = int(call.data.split('_')[-1])
+        current_day_name = days_of_week_full[day_index]
+        day_schedule = schedule_module.parse_schedule_for_day(full_schedule, current_day_name)
+        
+        markup = types.InlineKeyboardMarkup()
+        btn_back = types.InlineKeyboardButton("⬅️ Назад к выбору дня", callback_data="back_to_schedule_menu")
+        markup.add(btn_back)
+        bot.send_message(chat_id, f"**Расписание на {current_day_name}:**\n\n{day_schedule}", parse_mode="Markdown", reply_markup=markup)
         try: bot.delete_message(chat_id=chat_id, message_id=message_id)
         except: pass
 
     elif call.data == "schedule_week":
         bot.answer_callback_query(call.id, "Загружаю расписание...")
-        full_schedule = db.get_schedule()
+        user_group_id = db.get_user_group(user_id)
+        if not user_group_id:
+            bot.send_message(chat_id, "Пожалуйста, сначала выбери свой класс.")
+            return
+
+        full_schedule = db.get_schedule_for_group(user_group_id)
         markup = types.InlineKeyboardMarkup()
-        btn_back = types.InlineKeyboardButton("⬅️ Назад к выбору расписания", callback_data="back_to_schedule_menu")
+        btn_back = types.InlineKeyboardButton("⬅️ Назад к выбору дня", callback_data="back_to_schedule_menu")
         markup.add(btn_back)
         if full_schedule:
             bot.send_message(chat_id, f"**Расписание на неделю:**\n\n{full_schedule}", parse_mode="Markdown", reply_markup=markup)
         else:
-            bot.send_message(chat_id, "Расписание еще не заполнено.", reply_markup=markup)
+            bot.send_message(chat_id, "Расписание для твоего класса еще не заполнено.", reply_markup=markup)
         try: bot.delete_message(chat_id=chat_id, message_id=message_id)
         except: pass
     
@@ -135,6 +235,17 @@ def callback_query(call):
         support_module.start_create_request_flow(call.message, bot)
         try: bot.delete_message(chat_id=chat_id, message_id=message_id)
         except: pass
+    
+    elif call.data == "faq_solved":
+        bot.answer_callback_query(call.id, "Отлично!")
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Рад был помочь! Если возникнут другие вопросы, обращайся.", reply_markup=None)
+    
+    elif call.data == "faq_not_solved":
+        bot.answer_callback_query(call.id, "Создаю запрос в техподдержку...")
+        support_module.create_ticket_after_faq(call, bot)
+        try: bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except: pass
+
     elif call.data == "support_check_status":
         bot.answer_callback_query(call.id, "Проверяю ваши запросы...")
         support_module.show_user_requests(call.message, bot)
@@ -293,44 +404,61 @@ def callback_query(call):
             support_module.show_faq(call.message, bot)
             try: bot.delete_message(chat_id=chat_id, message_id=message_id)
             except: pass
+        
+        elif call.data == "admin_manage_classes":
+            bot.answer_callback_query(call.id)
+            admin_module.show_manage_classes_panel(bot, chat_id, message_id)
+        elif call.data == "admin_add_group":
+            bot.answer_callback_query(call.id)
+            admin_module.start_add_group_flow(bot, chat_id)
+            try: bot.delete_message(chat_id, message_id)
+            except: pass
+        elif call.data == "admin_delete_group":
+            bot.answer_callback_query(call.id)
+            admin_module.show_deletable_groups_list(bot, chat_id, message_id)
+        elif call.data.startswith("admin_confirm_delete_group_"):
+            group_id = int(call.data.split('_')[-1])
+            admin_module.confirm_delete_group(bot, chat_id, message_id, group_id)
+        elif call.data.startswith("admin_do_delete_group_"):
+            group_id = int(call.data.split('_')[-1])
+            admin_module.do_delete_group(bot, call, group_id)
             
         elif call.data == "admin_manage_schedule":
             bot.answer_callback_query(call.id, "Управление расписанием...")
             schedule_module.show_manage_schedule_panel(bot, chat_id, message_id)
         elif call.data == "admin_schedule_update":
             bot.answer_callback_query(call.id)
-            schedule_module.start_schedule_update_flow(bot, chat_id, admin_module.admin_states)
-            try: bot.delete_message(chat_id=chat_id, message_id=message_id)
+            schedule_module.select_group_for_schedule_update(bot, chat_id)
+            try: bot.delete_message(chat_id, message_id)
+            except: pass
+        elif call.data.startswith("admin_set_schedule_for_group_"):
+            group_id = int(call.data.split('_')[-1])
+            schedule_module.start_schedule_update_flow(bot, chat_id, admin_module.admin_states, group_id)
+            try: bot.delete_message(chat_id, message_id)
             except: pass
             
         elif call.data == "admin_schedule_delete_confirm":
-            bot.answer_callback_query(call.id)
-            schedule_text = db.get_schedule()
-            if not schedule_text:
-                markup = types.InlineKeyboardMarkup()
-                btn_back = types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_manage_schedule")
-                markup.add(btn_back)
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Расписание уже пусто.", reply_markup=markup)
-                return
+             bot.answer_callback_query(call.id)
+             schedule_module.select_group_for_schedule_delete(bot, chat_id, message_id)
+        
+        elif call.data.startswith("admin_confirm_delete_schedule_for_group_"):
+            group_id = int(call.data.split('_')[-1])
+            schedule_module.confirm_schedule_delete_for_group(bot, chat_id, message_id, group_id)
 
-            markup = types.InlineKeyboardMarkup(row_width=2)
-            btn_yes = types.InlineKeyboardButton("Да, очистить", callback_data="admin_schedule_do_delete")
-            btn_no = types.InlineKeyboardButton("Отмена", callback_data="admin_manage_schedule")
-            markup.add(btn_yes, btn_no)
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ Вы уверены, что хотите полностью очистить всё расписание?", reply_markup=markup)
-
-        elif call.data == "admin_schedule_do_delete":
-            if db.update_schedule(None):
-                bot.answer_callback_query(call.id, "Расписание успешно очищено.", show_alert=True)
+        elif call.data.startswith("admin_do_delete_schedule_for_group_"):
+            group_id = int(call.data.split('_')[-1])
+            if db.update_schedule(group_id, None):
+                bot.answer_callback_query(call.id, "Расписание для группы очищено.", show_alert=True)
                 schedule_module.show_manage_schedule_panel(bot, chat_id, message_id)
             else:
-                bot.answer_callback_query(call.id, "Произошла ошибка при очистке расписания.", show_alert=True)
+                bot.answer_callback_query(call.id, "Ошибка при очистке расписания.", show_alert=True)
 
-@bot.message_handler(func=lambda message: support_module.user_support_states.get(message.chat.id) == support_module.SUPPORT_STATE_AWAITING_DESCRIPTION)
+
+@bot.message_handler(func=lambda message: support_module.user_support_states.get(message.chat.id, {}).get('state') == support_module.SUPPORT_STATE_AWAITING_DESCRIPTION)
 def process_support_message(message):
     support_module.process_support_description(message, bot)
 
-@bot.message_handler(func=lambda message: support_module.user_support_states.get(message.chat.id) == support_module.SUPPORT_STATE_AWAITING_REPLY)
+@bot.message_handler(func=lambda message: support_module.user_support_states.get(message.chat.id, {}).get('state') == support_module.SUPPORT_STATE_AWAITING_REPLY)
 def process_user_reply_message(message):
     support_module.process_user_reply(message, bot)
 
@@ -350,7 +478,11 @@ def process_admin_faq_answer_message(message):
 def process_admin_bulk_faq_text_message(message):
     admin_module.process_bulk_faq_text(message, bot, admin_module.admin_states)
 
-@bot.message_handler(func=lambda message: admin_module.is_admin(message.from_user.id) and admin_module.admin_states.get(message.chat.id) == schedule_module.ADMIN_STATE_AWAITING_SCHEDULE_TEXT)
+@bot.message_handler(func=lambda message: admin_module.is_admin(message.from_user.id) and admin_module.admin_states.get(message.chat.id) == admin_module.ADMIN_STATE_AWAITING_GROUP_NAME)
+def process_admin_add_group_message(message):
+    admin_module.process_add_group(message, bot)
+
+@bot.message_handler(func=lambda message: admin_module.is_admin(message.from_user.id) and admin_module.admin_states.get(message.chat.id, {}).get('state') == schedule_module.ADMIN_STATE_AWAITING_SCHEDULE_TEXT)
 def process_admin_schedule_text_message(message):
     schedule_module.process_schedule_update(message, bot, admin_module.admin_states)
 
