@@ -16,7 +16,7 @@ bot = telebot.TeleBot(config.BOT_TOKEN)
 
 ADMIN_DOC_PATH = "admin_documentation.pdf"
 
-user_class_selection_state = {}
+admin_schedule_view_state = {}
 
 def get_main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
@@ -37,6 +37,20 @@ def get_schedule_menu():
     
     btn_back = types.InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main_from_schedule")
     markup.add(btn_back)
+    return markup
+
+def get_admin_schedule_menu():
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]
+    buttons = [types.InlineKeyboardButton(day, callback_data=f"schedule_day_{i}") for i, day in enumerate(days)]
+    markup.add(*buttons)
+    
+    btn_today = types.InlineKeyboardButton("На сегодня", callback_data="schedule_today")
+    btn_all_week = types.InlineKeyboardButton("На всю неделю", callback_data="schedule_week")
+    markup.add(btn_today, btn_all_week)
+    
+    btn_back_to_groups = types.InlineKeyboardButton("⬅️ Назад к выбору группы", callback_data="admin_back_to_group_select")
+    markup.add(btn_back_to_groups)
     return markup
 
 @bot.message_handler(commands=['start', 'help'])
@@ -76,14 +90,30 @@ def get_main_menu_with_admin_button(is_admin_user):
         markup.add(btn_admin_panel)
     return markup
 
+def show_admin_group_selection_for_schedule(message):
+    chat_id = message.chat.id
+    groups = db.get_all_groups_with_classes()
+    if not groups:
+        bot.send_message(chat_id, "В системе еще не создано ни одной группы. Расписание смотреть некому.")
+        return
+        
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    buttons = [types.InlineKeyboardButton(f"{class_num}{group_name}", callback_data=f"admin_view_schedule_for_group_{group_id}") for group_id, class_num, group_name in groups]
+    markup.add(*buttons)
+    bot.send_message(chat_id, "Выберите группу для просмотра расписания:", reply_markup=markup)
+
 @bot.message_handler(func=lambda message: message.text == "Расписание")
 def show_schedule_options(message):
     user_id = message.from_user.id
-    is_admin_user = (user_id in config.ADMIN_IDS)
+    is_admin_user = admin_module.is_admin(user_id)
     db.add_or_update_user(user_id, message.from_user.username, message.from_user.first_name, message.from_user.last_name, is_admin_user)
     
+    if is_admin_user:
+        show_admin_group_selection_for_schedule(message)
+        return
+
     user_group_id = db.get_user_group(user_id)
-    if not user_group_id and not is_admin_user:
+    if not user_group_id:
         bot.send_message(message.chat.id, "Сначала нужно выбрать свой класс.", reply_markup=get_class_selection_menu())
         return
 
@@ -125,6 +155,7 @@ def callback_query(call):
     chat_id = call.message.chat.id
     user_id = call.from_user.id
     message_id = call.message.message_id
+    is_admin_user = admin_module.is_admin(user_id)
 
     if call.data.startswith("select_class_"):
         class_id = int(call.data.split('_')[-1])
@@ -146,23 +177,45 @@ def callback_query(call):
             text=f"Отлично! Я запомнил, что ты из {class_name}{group_name} класса.",
             reply_markup=None
         )
-        bot.send_message(chat_id, "Теперь ты можешь посмотреть расписание или обратиться в техподдержку.", reply_markup=get_main_menu_with_admin_button(admin_module.is_admin(user_id)))
+        bot.send_message(chat_id, "Теперь ты можешь посмотреть расписание или обратиться в техподдержку.", reply_markup=get_main_menu_with_admin_button(is_admin_user))
 
-    ### НОВЫЙ БЛОК: Логика для кнопки "На сегодня" ###
+    elif call.data.startswith("admin_view_schedule_for_group_"):
+        group_id = int(call.data.split('_')[-1])
+        admin_schedule_view_state[user_id] = group_id
+        group_info = db.get_group_info(group_id)
+        group_name_full = f"{group_info[2]}{group_info[1]}" if group_info else f"ID: {group_id}"
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=f"Что интересует по расписанию для группы **{group_name_full}**?",
+            reply_markup=get_admin_schedule_menu(),
+            parse_mode="Markdown"
+        )
+    
+    elif call.data == "admin_back_to_group_select":
+        show_admin_group_selection_for_schedule(call.message)
+        bot.delete_message(chat_id, message_id)
+
     elif call.data == "schedule_today":
         bot.answer_callback_query(call.id, "Загружаю расписание...")
-        user_group_id = db.get_user_group(user_id)
-        if not user_group_id:
+        
+        group_id_to_show = None
+        if is_admin_user and user_id in admin_schedule_view_state:
+            group_id_to_show = admin_schedule_view_state[user_id]
+        else:
+            group_id_to_show = db.get_user_group(user_id)
+        
+        if not group_id_to_show:
             bot.send_message(chat_id, "Пожалуйста, сначала выбери свой класс.")
             return
 
-        full_schedule = db.get_schedule_for_group(user_group_id)
+        full_schedule = db.get_schedule_for_group(group_id_to_show)
         if not full_schedule:
-            bot.send_message(chat_id, "Расписание для твоего класса еще не заполнено.")
+            bot.send_message(chat_id, "Расписание для этой группы еще не заполнено.")
             return
 
         days_of_week_full = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-        day_index = datetime.datetime.now().weekday() # 0 = Пн, 6 = Вс
+        day_index = datetime.datetime.now().weekday()
         current_day_name = days_of_week_full[day_index]
         day_schedule = schedule_module.parse_schedule_for_day(full_schedule, current_day_name)
         
@@ -175,14 +228,20 @@ def callback_query(call):
 
     elif call.data.startswith("schedule_day_"):
         bot.answer_callback_query(call.id, "Загружаю расписание...")
-        user_group_id = db.get_user_group(user_id)
-        if not user_group_id:
+
+        group_id_to_show = None
+        if is_admin_user and user_id in admin_schedule_view_state:
+            group_id_to_show = admin_schedule_view_state[user_id]
+        else:
+            group_id_to_show = db.get_user_group(user_id)
+        
+        if not group_id_to_show:
             bot.send_message(chat_id, "Пожалуйста, сначала выбери свой класс.")
             return
 
-        full_schedule = db.get_schedule_for_group(user_group_id)
+        full_schedule = db.get_schedule_for_group(group_id_to_show)
         if not full_schedule:
-            bot.send_message(chat_id, "Расписание для твоего класса еще не заполнено.")
+            bot.send_message(chat_id, "Расписание для этой группы еще не заполнено.")
             return
 
         days_of_week_full = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
@@ -199,32 +258,51 @@ def callback_query(call):
 
     elif call.data == "schedule_week":
         bot.answer_callback_query(call.id, "Загружаю расписание...")
-        user_group_id = db.get_user_group(user_id)
-        if not user_group_id:
+
+        group_id_to_show = None
+        if is_admin_user and user_id in admin_schedule_view_state:
+            group_id_to_show = admin_schedule_view_state[user_id]
+        else:
+            group_id_to_show = db.get_user_group(user_id)
+        
+        if not group_id_to_show:
             bot.send_message(chat_id, "Пожалуйста, сначала выбери свой класс.")
             return
 
-        full_schedule = db.get_schedule_for_group(user_group_id)
+        full_schedule = db.get_schedule_for_group(group_id_to_show)
         markup = types.InlineKeyboardMarkup()
         btn_back = types.InlineKeyboardButton("⬅️ Назад к выбору дня", callback_data="back_to_schedule_menu")
         markup.add(btn_back)
         if full_schedule:
             bot.send_message(chat_id, f"**Расписание на неделю:**\n\n{full_schedule}", parse_mode="Markdown", reply_markup=markup)
         else:
-            bot.send_message(chat_id, "Расписание для твоего класса еще не заполнено.", reply_markup=markup)
+            bot.send_message(chat_id, "Расписание для этой группы еще не заполнено.", reply_markup=markup)
         try: bot.delete_message(chat_id=chat_id, message_id=message_id)
         except: pass
     
     elif call.data == "back_to_schedule_menu":
         bot.answer_callback_query(call.id)
         bot.delete_message(chat_id=chat_id, message_id=message_id)
-        bot.send_message(chat_id, "Что интересует по расписанию?", reply_markup=get_schedule_menu())
+        
+        if is_admin_user:
+             group_id = admin_schedule_view_state.get(user_id)
+             group_info = db.get_group_info(group_id) if group_id else None
+             group_name_full = f"{group_info[2]}{group_info[1]}" if group_info else "..."
+             bot.send_message(
+                chat_id,
+                f"Что интересует по расписанию для группы **{group_name_full}**?",
+                reply_markup=get_admin_schedule_menu(),
+                parse_mode="Markdown"
+            )
+        else:
+            bot.send_message(chat_id, "Что интересует по расписанию?", reply_markup=get_schedule_menu())
     
     elif call.data == "back_to_main_from_schedule":
         bot.answer_callback_query(call.id)
         bot.delete_message(chat_id=chat_id, message_id=message_id)
-        bot.send_message(chat_id, "Главное меню", reply_markup=get_main_menu_with_admin_button(admin_module.is_admin(user_id)))
+        bot.send_message(chat_id, "Главное меню", reply_markup=get_main_menu_with_admin_button(is_admin_user))
 
+    # ... (остальной код без изменений) ...
     elif call.data == "support_faq":
         bot.answer_callback_query(call.id, "Открываю FAQ...")
         support_module.show_faq(call.message, bot)
@@ -260,7 +338,7 @@ def callback_query(call):
         bot.answer_callback_query(call.id, "Возвращаюсь в главное меню")
         try: bot.delete_message(chat_id=chat_id, message_id=message_id)
         except: pass
-        bot.send_message(chat_id, "Главное меню", reply_markup=get_main_menu_with_admin_button(admin_module.is_admin(user_id)))
+        bot.send_message(chat_id, "Главное меню", reply_markup=get_main_menu_with_admin_button(is_admin_user))
 
     elif call.data.startswith("user_resolve_request_"):
         request_id = int(call.data.split('_')[-1])
@@ -293,7 +371,7 @@ def callback_query(call):
         else:
             bot.answer_callback_query(call.id, "Произошла ошибка при удалении.")
 
-    elif admin_module.is_admin(user_id):
+    elif is_admin_user:
         if call.data == "admin_back_to_main":
             bot.answer_callback_query(call.id, "Назад в админ-панель...")
             admin_module.show_admin_panel(bot, chat_id, message_id, user_id)
