@@ -302,7 +302,6 @@ def callback_query(call):
         bot.delete_message(chat_id=chat_id, message_id=message_id)
         bot.send_message(chat_id, "Главное меню", reply_markup=get_main_menu_with_admin_button(is_admin_user))
 
-    # ... (остальной код без изменений) ...
     elif call.data == "support_faq":
         bot.answer_callback_query(call.id, "Открываю FAQ...")
         support_module.show_faq(call.message, bot)
